@@ -9,9 +9,9 @@
 
 * LoRA for finetune
     * basic version
-        * achieve
-        * change the dataloader to load more data
-        * some data augmentation
-        * train parameters adjustment
+        - [ ] achieve
+        - [ ] change the dataloader to load more data
+        - [ ] some data augmentation
+        - [ ] train parameters adjustment
     * quantized version
 * Model ensemble
