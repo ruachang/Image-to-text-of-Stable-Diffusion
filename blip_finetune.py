@@ -9,6 +9,7 @@ import numpy as np
 
 from dataset_diffusionDB import DiffusionDB
 from evaluate import evaluate
+from utils import *
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -22,10 +23,10 @@ def build_args():
     parser.add_argument("--train_root_dir", type=str, default="/data/changl25/Diffusion2DB/part-000002")
     parser.add_argument("--test_root_dir", type=str, default="/data/changl25/Diffusion2DB/part-000001")
     
-    parser.add_argument("lora_alpha", type=int, default=32)
-    parser.add_argument("lora_rank", type=int, default=4)
-    parser.add_argument("lora_bias", type=str, default="none")
-    parser.add_argument("lora_dropout", type=float, default=0.05)
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_rank", type=int, default=4)
+    parser.add_argument("--lora_bias", type=str, default="none")
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
     
     parser.add_argument("--model_save_dir", type=str, default="/data/changl25/img2textModel/blip_model")
     parser.add_argument("--save_dir", type=str, default="/home/changl25/Image-to-text-of-Stable-Diffusion/prompt_generate.csv")
@@ -59,9 +60,10 @@ def train_manual(peft_model, preprocessor, train_loader, test_loader, epochs, op
             loss.backward()
             optimizer.step()
             if (i + 1) % (len(train_loader) // 3) == 0:
-                print(f"Epoch {epoch}: {i} / {len(train_loader)} {loss} ")
-        evaluate_loss, clip_sim, similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
-        print(f"Epoch {epoch} final loss: {evaluate_loss:.4f}; similarity: {similarity:.4f}; clip similarity: {clip_sim:.4f}")
+                print(f"Epoch {epoch}: {i} / {len(train_loader)} {loss / len(prompt):.4f} ")
+        if epoch in [0, 5, 10, 30, 40]:
+            evaluate_loss, clip_sim, similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
+            print(f"Epoch {epoch} final loss: {evaluate_loss:.4f}; similarity: {similarity:.4f}; clip similarity: {clip_sim:.4f}")
     print("Trained down!")     
 
 def main(args):
@@ -71,7 +73,7 @@ def main(args):
     
     train_root_dir = args.train_root_dir
     test_root_dir = args.test_root_dir
-    save_dir
+    save_dir = args.save_dir
     guide_text = "A photo of"
     processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
     
@@ -80,26 +82,26 @@ def main(args):
     else:
         model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
     
-    lora_config = LoraConfig(
-        r              = args.lora_rank,
-        lora_alpha     = args.lora_alpha, 
-        lora_dropout   = args.lora_dropout,
-        bias           = args.lora_bias,
-        target_modules = ["query", "value"]
-    )
-    peft_model = get_peft_model(model, lora_config)
+    lora_configs = {}
+    lora_configs["lora_rank"] = args.lora_rank
+    lora_configs["lora_alpha"] = args.lora_alpha
+    lora_configs["lora_bias"] = args.lora_bias
+    lora_configs["lora_dropout"] = args.lora_dropout
+    lora_configs["target_modules"] = ["query","value"]
+    
+    peft_model = get_lora_model(model, lora_configs)
     peft_model = peft_model.to(device)
     
     test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, test=True)
     test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
-    train_dataset = DiffusionDB(train_root_dir, text = guide_text, transform=processor)
+    train_dataset = DiffusionDB(train_root_dir, text = guide_text, transform=processor, test=True)
     train_loader = DataLoader(train_dataset,batch_size=batch_size,shuffle=True)
 
     optimizer = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
     train_manual(peft_model, processor, train_loader, test_loader, epochs, optimizer, precision, train_dataset.is_text_supervised())
     loss, clip_sim, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
     print("Evaluate after training")
-    print(f"Final loss: {evaluate_loss:.4f}; similarity: {similarity:.4f}; clip similarity: {clip_sim:.4f}")
+    print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
     peft_model.save_pretrained(args.model_save_dir)
     
 if __name__ == "__main__":

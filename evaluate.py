@@ -134,7 +134,8 @@ def main(args):
     test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
 
     loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
-    print(loss, clip_sim, sen_sim)
+    print(f"Evaluate loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
+
 if __name__ == "__main__":
     args = build_args()
     main(args)

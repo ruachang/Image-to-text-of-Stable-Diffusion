@@ -9,9 +9,11 @@
 
 * LoRA for finetune
     * basic version
-        - [ ] achieve
+        - [x] achieve
+        - [ ] load lora model: can not load from config
         - [ ] change the dataloader to load more data
         - [ ] some data augmentation
-        - [ ] train parameters adjustment
+        - [ ] train parameters adjustment: add another loss function?
     * quantized version
 * Model ensemble
+* More dataset/combined dataset
