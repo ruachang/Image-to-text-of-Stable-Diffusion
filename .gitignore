@@ -2,3 +2,4 @@
 *.sub
 *.csv
 *.sh
+*.pyc
