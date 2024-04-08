@@ -31,3 +31,11 @@ def get_lora_model(model, configs):
     
     peft_model = get_peft_model(model, lora_config)
     return peft_model
+
+def print_cuda_memory_statistics(device):
+    print(f"Total memory: {torch.cuda.get_device_properties(device).total_memory / (1024 ** 2)} MB")
+    allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 2)
+    print(f"Allocated memory: {allocated_memory} MB")
+    reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 2)
+    print(f"Reserved memory: {reserved_memory} MB")
+    print(f"Free memory within reserved: {reserved_memory - allocated_memory} MB")
