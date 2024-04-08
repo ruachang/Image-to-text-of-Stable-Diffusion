@@ -10,6 +10,7 @@ from transformers import BlipProcessor, BlipForConditionalGeneration
 from torch.utils.data import DataLoader
 from dataset_diffusionDB import DiffusionDB
 
+from transformers import CLIPTextModel, CLIPTokenizer
 
 def sd_encoder(text, tokenizer, encoder, device):
     input = tokenizer(text, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
@@ -17,11 +18,7 @@ def sd_encoder(text, tokenizer, encoder, device):
     embeddings = encoder(input_ids)[0]
     return embeddings
 
-def clip_cos_similarity(output_prompt, prompts, device):
-    from transformers import CLIPTextModel, CLIPTokenizer
-    clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-    clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
-
+def clip_cos_similarity(clip_tokenizer, clip_text_encoder, output_prompt, prompts, device):
     caption_embeddings = sd_encoder(output_prompt, clip_tokenizer, clip_text_encoder, device)
     prompt_embeddings = sd_encoder(prompts, clip_tokenizer, clip_text_encoder, device)
     prompt_embeds_flat = prompt_embeddings.view(prompt_embeddings.size(0), -1)
@@ -52,6 +49,10 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
     loss_time = 0
     generate_time = 0
     load_time = 0
+    
+    clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+
     with torch.no_grad():
         for i, data in enumerate(data_loader):
             start_time = time.time()
@@ -96,11 +97,11 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
             prompt_text.append(prompt)
             if saved == True:
                 file.write(f"{output_text}_____{prompt}\n")
-    clip_sim = clip_cos_similarity(caption_text, prompt_text, device)
-    sentence_sim = sentence_cos_similarity(caption_text, prompt_text, device)
+    clip_sim = clip_cos_similarity(clip_tokenizer, clip_text_encoder, caption_text, prompt_text, device)
+    # sentence_sim = sentence_cos_similarity(caption_text, prompt_text, device)
     end_time = time.time()
     print(f"load time: {load_time / len(data_loader):.4f}, loss time: {loss_time / len(data_loader):.4f}, generate time: {generate_time / len(data_loader):.4f}, similar time: {(end_time - start_time) / len(caption_text):.4f}")
-    return loss / len(data_loader), clip_sim, sentence_sim
+    # return loss / len(data_loader), clip_sim, sentence_sim
 
 def build_args():
     parser = argparse.ArgumentParser()
@@ -128,13 +129,14 @@ def main(args):
     if args.pretrained:
         model = BlipForConditionalGeneration.from_pretrained(args.model_load_dir).to(device)
     else:
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
     
     test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, test=True)
     test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
-
-    loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
-    print(f"Evaluate loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
+    for i in range(10):
+        # loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+        evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+        # print(f"Evaluate loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
 
 if __name__ == "__main__":
     args = build_args()
