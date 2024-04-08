@@ -99,9 +99,9 @@ def main(args):
 
     optimizer = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
     train_manual(peft_model, processor, train_loader, test_loader, epochs, optimizer, precision, train_dataset.is_text_supervised())
-    loss, clip_sim, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+    loss, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
     print("Evaluate after training")
-    print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
+    print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f};")
     peft_model.save_pretrained(args.model_save_dir)
     
 if __name__ == "__main__":

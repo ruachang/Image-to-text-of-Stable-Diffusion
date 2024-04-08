@@ -1,5 +1,5 @@
 /logs
 *.sub
 *.csv
-*.sh
+*submit.sh
 *.pyc
