@@ -11,6 +11,13 @@ from torch.utils.data import DataLoader
 from dataset_diffusionDB import DiffusionDB
 
 from transformers import CLIPTextModel, CLIPTokenizer
+global clip_tokenizer, clip_text_encoder, st_model
+
+import sys
+sys.path.append("/data/changl25/img2textModel/sentence-transformers/")
+from sentence_transformers import SentenceTransformer, models
+
+from utils import *
 
 def sd_encoder(text, tokenizer, encoder, device):
     input = tokenizer(text, padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
@@ -25,15 +32,10 @@ def clip_cos_similarity(clip_tokenizer, clip_text_encoder, output_prompt, prompt
     caption_embeds_flat = caption_embeddings.view(caption_embeddings.size(0), -1)
     prompt_embeds = prompt_embeds_flat / prompt_embeds_flat.norm(dim=1, keepdim=True)
     caption_embeds = caption_embeds_flat / caption_embeds_flat.norm(dim=1, keepdim=True)
-    similarity = (torch.matmul(prompt_embeds, caption_embeds.t())).mean()
-    return similarity
+    cos_similarity = (torch.matmul(prompt_embeds, caption_embeds.t())).mean()
+    return cos_similarity
 
-def sentence_cos_similarity(output_prompt, prompts, device):
-    import sys
-    sys.path.append("/data/changl25/img2textModel/sentence-transformers/")
-    from sentence_transformers import SentenceTransformer, models
-
-    st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device)
+def sentence_cos_similarity(st_model, output_prompt, prompts):
     prompt_embedding = st_model.encode(prompts).flatten()
     output_embedding = st_model.encode(output_prompt).flatten()
     similarity = np.dot(prompt_embedding, output_embedding) / (np.linalg.norm(prompt_embedding) * np.linalg.norm(output_embedding))
@@ -50,24 +52,33 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
     generate_time = 0
     load_time = 0
     
-    clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-    clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-
+    if precision == "float32":
+        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+        st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device)
+    
+    if precision == "float16":
+        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device).half()
+        st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device).half()
+    
+    peft_model.eval()
+    clip_text_encoder.eval()
+    st_model.eval()
+    
     with torch.no_grad():
         for i, data in enumerate(data_loader):
             start_time = time.time()
             inputs, inputs_generator, prompt = data
             for key, value in inputs.items():
-                if precision == "float32":
+                if precision == "float16" and key == "pixel_values":
+                    inputs[key] = value.to(device, torch.float16)
+                    inputs_generator[key] = inputs_generator[key].to(device, torch.float16)
+            
+                else:
                     inputs[key] = value.to(device)
                     inputs_generator[key] = inputs_generator[key].to(device)
-                elif precision == "float16":
-                    inputs[key] = value.to(device)
-                    inputs_generator[key] = inputs_generator[key].to(device, torch.float16)
-            if precision == "float32":
                 labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length")["input_ids"]).to(device)
-            elif precision == "float16":
-                labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length")["input_ids"]).to(device, torch.float16)
             end_time3 = time.time()
             if text_flag:
                 input_ids = inputs["input_ids"]
@@ -86,22 +97,23 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
             loss_time += (end_time1  - end_time3) / len(prompt)
             generate_time += (end_time2  - end_time1) / len(prompt)
             load_time += (end_time3 - start_time) / len(prompt)
-    start_time = time.time() 
-    if saved == True:
-        file = open(saved_dir, 'w')       
-    for i in range(len(evaluate_text)):
-        output_text_batch, prompt_batch = evaluate_text[i]
-        for j in range(len(output_text_batch)):
-            output_text, prompt = output_text_batch[j], prompt_batch[j]
-            caption_text.append(output_text)
-            prompt_text.append(prompt)
-            if saved == True:
-                file.write(f"{output_text}_____{prompt}\n")
-    clip_sim = clip_cos_similarity(clip_tokenizer, clip_text_encoder, caption_text, prompt_text, device)
-    # sentence_sim = sentence_cos_similarity(caption_text, prompt_text, device)
-    end_time = time.time()
-    print(f"load time: {load_time / len(data_loader):.4f}, loss time: {loss_time / len(data_loader):.4f}, generate time: {generate_time / len(data_loader):.4f}, similar time: {(end_time - start_time) / len(caption_text):.4f}")
-    # return loss / len(data_loader), clip_sim, sentence_sim
+        start_time = time.time() 
+        if saved == True:
+            file = open(saved_dir, 'w')       
+        for i in range(len(evaluate_text)):
+            output_text_batch, prompt_batch = evaluate_text[i]
+            for j in range(len(output_text_batch)):
+                output_text, prompt = output_text_batch[j], prompt_batch[j]
+                caption_text.append(output_text)
+                prompt_text.append(prompt)
+                if saved == True:
+                    file.write(f"{output_text}_____{prompt}\n")
+        clip_sim = clip_cos_similarity(clip_tokenizer, clip_text_encoder, caption_text, prompt_text, device)
+        sentence_sim = sentence_cos_similarity(st_model, caption_text, prompt_text)
+        end_time = time.time()
+        print(f"load time: {load_time / len(data_loader):.4f}, loss time: {loss_time / len(data_loader):.4f}, generate time: {generate_time / len(data_loader):.4f}, similar time: {(end_time - start_time) / len(caption_text):.4f}")
+        
+    return loss / len(data_loader), clip_sim, sentence_sim
 
 def build_args():
     parser = argparse.ArgumentParser()
@@ -117,7 +129,7 @@ def build_args():
     return args
 
 def main(args):
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     batch_size = args.batch_size
     precision = args.precision
     
@@ -131,12 +143,13 @@ def main(args):
     else:
         model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
     
+    if precision == "float16":
+        model = model.half()
     test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, test=True)
     test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
     for i in range(10):
-        # loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
-        evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
-        # print(f"Evaluate loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
+        loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+    print(f"Evaluate losss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
 
 if __name__ == "__main__":
     args = build_args()

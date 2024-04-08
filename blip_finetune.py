@@ -62,8 +62,8 @@ def train_manual(peft_model, preprocessor, train_loader, test_loader, epochs, op
             if (i + 1) % (len(train_loader) // 3) == 0:
                 print(f"Epoch {epoch}: {i} / {len(train_loader)} {loss / len(prompt):.4f} ")
         if epoch in [0, 5, 10, 30, 40]:
-            evaluate_loss, clip_sim, similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
-            print(f"Epoch {epoch} final loss: {evaluate_loss:.4f}; similarity: {similarity:.4f}; clip similarity: {clip_sim:.4f}")
+            evaluate_loss, similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
+            print(f"Epoch {epoch} final loss: {evaluate_loss:.4f}; similarity: {similarity:.4f}; clip similarity:")
     print("Trained down!")     
 
 def main(args):
@@ -80,7 +80,7 @@ def main(args):
     if args.pretrained:
         model = BlipForConditionalGeneration.from_pretrained(args.model_load_dir).to(device)
     else:
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
     
     lora_configs = {}
     lora_configs["lora_rank"] = args.lora_rank
@@ -99,9 +99,9 @@ def main(args):
 
     optimizer = torch.optim.AdamW(peft_model.parameters(), lr=1e-4)
     train_manual(peft_model, processor, train_loader, test_loader, epochs, optimizer, precision, train_dataset.is_text_supervised())
-    loss, clip_sim, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+    loss, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
     print("Evaluate after training")
-    print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
+    print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f};")
     peft_model.save_pretrained(args.model_save_dir)
     
 if __name__ == "__main__":
