@@ -9,3 +9,4 @@ scipy
 peft
 scikit-learn
 nltk
+datasets

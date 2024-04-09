@@ -15,7 +15,7 @@ global clip_tokenizer, clip_text_encoder, st_model
 
 import sys
 sys.path.append("/data/changl25/img2textModel/sentence-transformers/")
-from sentence_transformers import SentenceTransformer, models
+from sentence_transformers import SentenceTransformer
 
 from utils import *
 
@@ -121,7 +121,8 @@ def build_args():
     parser.add_argument("--pretrained", action='store_true')
     parser.add_argument("--model_load_dir", type=str, default="/data/changl25/img2textModel/blip_model")
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--test_root_dir", type=str, default="/data/changl25/Diffusion2DB/part-000001")
+    parser.add_argument("--data_root_dir", type=str, default="/data/changl25/Diffusion2DB")
+    parser.add_argument("--test_id", nargs='+', type=int, default=[1], help='test dataset id')
     
     parser.add_argument("--save_dir", type=str, default="/home/changl25/Image-to-text-of-Stable-Diffusion/prompt_generate.csv")
     parser.add_argument("--precision", type=str, default="float32")
@@ -133,7 +134,9 @@ def main(args):
     batch_size = args.batch_size
     precision = args.precision
     
-    test_root_dir = args.test_root_dir
+    data_root_dir = args.data_root_dir
+    test_root_dir = [os.path.join(data_root_dir, f"part-{part_id:06}") for part_id in args.test_id]
+    
     save_dir = args.save_dir
     guide_text = "A photo of"
     processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -147,8 +150,7 @@ def main(args):
         model = model.half()
     test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, test=True)
     test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
-    for i in range(10):
-        loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+    loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
     print(f"Evaluate losss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
 
 if __name__ == "__main__":

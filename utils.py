@@ -1,6 +1,7 @@
 import torch
 from peft import LoraConfig, get_peft_model
-
+import wandb
+import os
 def print_trainable_parameters(model):
     """
     Prints the number of trainable parameters in the model.
@@ -39,3 +40,17 @@ def print_cuda_memory_statistics(device):
     reserved_memory = torch.cuda.memory_reserved(device) / (1024 ** 2)
     print(f"Reserved memory: {reserved_memory} MB")
     print(f"Free memory within reserved: {reserved_memory - allocated_memory} MB")
+
+def init_wandb(config, model, name):
+    wandb.init(
+        config=config,
+        name=name,
+        project="blip"
+                )
+    wandb.watch(model)
+    
+def save_model(path, model, epochs):
+    save_model_dir = os.path.join(path, epochs)
+    os.makedirs(save_model_dir, exist_ok=True)
+    model.save_pretrained(save_model_dir)
+    
