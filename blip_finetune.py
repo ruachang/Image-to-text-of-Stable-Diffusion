@@ -65,7 +65,7 @@ def train_manual(peft_model, preprocessor, train_loader, validate_loader, test_l
             loss.backward()
             optimizer.step()
             if (i + 1) % (len(train_loader) // 3) == 0:
-                print(f"Epoch {epoch}: {i} / {len(train_loader)} {loss / len(prompt):.4f} ")
+                print(f"Epoch {epoch}: {i} / {len(train_loader)} {(loss / len(prompt)):.4f}")
         validate_loss, validate_clip_sim, validate_similarity = evaluate(peft_model, preprocessor,validate_loader, text_flag, precision, device)
         test_loss, test_clip_sim, test_similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
         print(f"Epoch {epoch}: validate: loss {validate_loss:.4f}; similarity: {validate_similarity:.4f}; clip similarity: {validate_clip_sim:.4f}")
