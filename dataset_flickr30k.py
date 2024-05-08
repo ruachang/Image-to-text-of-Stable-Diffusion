@@ -1,52 +1,54 @@
 import os
 import random
 
-import cv2
 import numpy as np
 
+import csv
 import torch
 import torch.utils.data as DataLoader
-import torchvision.transforms as transforms
 from json import load
 from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
+from transformers import BlipProcessor, Blip2Processor
 
-class DiffusionDB(DataLoader.Dataset):
+class Flickr30k(DataLoader.Dataset):
     def __init__(
         self,
-        root_img_dir_list,
+        root_dir,
         text=None,
         transform=None, 
-        test=False,
-        regenerate=True,
+        split="train",
+        data_split=1,
         max_length=None
     ):
         self.filename = []
         self.prompt = []
         self.text = text
         self.max_length = max_length
-        for root_img_dir in root_img_dir_list:
-            if regenerate:
-                json_file = "re-" + os.path.basename(root_img_dir) + ".json"
-            else:
-                json_file = os.path.basename(root_img_dir) + ".json"
-            json_data = load(open(os.path.join(root_img_dir, json_file), 'r', encoding='utf8'))
-        # self.root = root_img_dir
-            keys = list(json_data.keys())
+        csv_path = os.path.join(root_dir, "re-flickr30k.csv")
+        img_root_path = os.path.join(root_dir, "flickr30k-images")
+        
+        keys = []
+        values = []
+        with open(csv_path, mode='r', newline='') as file:
+            reader = csv.reader(file)
+            header = next(reader)
+            for row in reader:
+                split_cls = row[2]
+                if split_cls != split:
+                    continue 
+                caption_list = row[0].split(",")
+                # caption_list = caption_list.split(",")
+                img_name = row[3]
+                img_path = os.path.join(img_root_path, img_name)
+                caption_ele_lst = max(caption_list, key=len).split('"')
+                caption =''.join(caption_ele_lst[i] for i in range(1, len(caption_ele_lst)))
+                keys.append(img_path)
+                values.append(caption)
             random.seed(1024)
-            selected_keys = random.sample(keys, len(json_data)//10)
-            if test:
-                img_data = {key: json_data[key] for key in selected_keys}
-            else:
-                train_keys = [key for key in keys if key not in selected_keys]
-                img_data = {key: json_data[key] for key in train_keys}
+            selected_keys = random.sample(list(range(len(keys))), len(keys)//data_split)
 
-            for img_name, img_info in img_data.items():
-                self.filename.append(os.path.join(root_img_dir, img_name))
-                if regenerate:
-                    self.prompt.append(img_info)
-                else:
-                    self.prompt.append(img_info['p'])
+            self.filename = [keys[i] for i in selected_keys]
+            self.prompt = [values[i] for i in selected_keys]
         self.processor = transform
     def __getitem__(self, idx):
         img_path = self.filename[idx]
@@ -78,8 +80,8 @@ class DiffusionDB(DataLoader.Dataset):
             return True
     
 if __name__ == '__main__':
-    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    test_dataset = DiffusionDB(['/data/changl25/Diffusion2DB/part-000001', '/data/changl25/Diffusion2DB/part-000002'], text = "a photo of", transform=processor, test=True)
+    processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b-coco")
+    test_dataset = Flickr30k('/data/changl25/flickr30k/', text = "a photo of", transform=processor, split="test")
     test_loader = DataLoader.DataLoader(test_dataset,batch_size=8,shuffle=True)
     nxt = next(iter(test_loader))[0]["attention_mask"].shape
     print(nxt)

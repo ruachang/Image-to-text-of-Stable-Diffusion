@@ -1,5 +1,6 @@
 import torch
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, PeftModel, PeftConfig
+from transformers import Blip2ForConditionalGeneration
 import wandb
 import os
 def print_trainable_parameters(model):
@@ -33,6 +34,12 @@ def get_lora_model(model, configs):
     peft_model = get_peft_model(model, lora_config)
     return peft_model
 
+def load_lora_blip2_model(model, peft_pretrained_path):
+    config = PeftConfig.from_pretrained(peft_pretrained_path)
+    model = model.from_pretrained(config.base_model_name_or_path)
+    model = PeftModel.from_pretrained(model, peft_pretrained_path)
+    return model
+
 def print_cuda_memory_statistics(device):
     print(f"Total memory: {torch.cuda.get_device_properties(device).total_memory / (1024 ** 2)} MB")
     allocated_memory = torch.cuda.memory_allocated(device) / (1024 ** 2)
@@ -54,3 +61,7 @@ def save_model(path, model, epochs):
     os.makedirs(save_model_dir, exist_ok=True)
     model.save_pretrained(save_model_dir)
     
+def comb_output(labels, output, caption):
+    output_text = [labels[int(i)] for i in output_text]
+    output = [caption[i] + output[i] for i in range(len(caption))]
+    return output

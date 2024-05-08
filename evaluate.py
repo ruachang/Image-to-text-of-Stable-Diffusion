@@ -7,9 +7,10 @@ import numpy as np
 import torch 
 
 from transformers import BlipProcessor, BlipForConditionalGeneration
+from transformers import Blip2Processor, Blip2ForConditionalGeneration
 from torch.utils.data import DataLoader
 from dataset_diffusionDB import DiffusionDB
-
+from dataset_flickr30k import Flickr30k
 from transformers import CLIPTextModel, CLIPTokenizer
 global clip_tokenizer, clip_text_encoder, st_model
 
@@ -41,7 +42,7 @@ def sentence_cos_similarity(st_model, output_prompt, prompts):
     similarity = np.dot(prompt_embedding, output_embedding) / (np.linalg.norm(prompt_embedding) * np.linalg.norm(output_embedding))
     return similarity
 
-def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device, saved=False, saved_dir=None):
+def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device, saved=False, saved_dir=None, max_length=512, max_new_tokens=50, num_beams=1):
     loss = 0
     evaluate_text = []
     caption_text = []
@@ -52,14 +53,13 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
     generate_time = 0
     load_time = 0
     
+    clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+    clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+        
     if precision == "float32":
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
         st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device)
     
     if precision == "float16":
-        clip_tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        clip_text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14").to(device).half()
         st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device).half()
     
     peft_model.eval()
@@ -78,7 +78,7 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
                 else:
                     inputs[key] = value.to(device)
                     inputs_generator[key] = inputs_generator[key].to(device)
-                labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length")["input_ids"]).to(device)
+                labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length", truncation=True, max_length=max_length)["input_ids"]).to(device)
             end_time3 = time.time()
             if text_flag:
                 input_ids = inputs["input_ids"]
@@ -90,7 +90,11 @@ def evaluate(peft_model, preprocessor, data_loader, text_flag, precision, device
                 outputs = peft_model(pixel_values=pixel_values, labels=labels)
             loss += outputs.loss / len(prompt)
             end_time1 = time.time()
-            out = peft_model.generate(**inputs_generator)
+            out = peft_model.generate(**inputs_generator,
+                                      max_new_tokens=max_new_tokens, 
+                                      num_beams=num_beams,
+                                      early_stopping=True
+                                      )
             out_text = preprocessor.batch_decode(out, skip_special_tokens=True)
             end_time2 = time.time()
             evaluate_text.append((out_text, prompt))
@@ -120,7 +124,12 @@ def build_args():
     parser.add_argument("--config_path", type=str)
     parser.add_argument("--pretrained", action='store_true')
     parser.add_argument("--model_load_dir", type=str, default="/data/changl25/img2textModel/blip_model")
+    parser.add_argument("--model", type=str, default="blip2")
     parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--dataset", type=str, default="Diffusion2DB")
+    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--max_new_tokens", type=int, default=50)
+    parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--data_root_dir", type=str, default="/data/changl25/Diffusion2DB")
     parser.add_argument("--test_id", nargs='+', type=int, default=[1], help='test dataset id')
     
@@ -139,18 +148,30 @@ def main(args):
     
     save_dir = args.save_dir
     guide_text = "A photo of"
-    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    
-    if args.pretrained:
-        model = BlipForConditionalGeneration.from_pretrained(args.model_load_dir).to(device)
-    else:
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
-    
+        
+    if args.model == "blip":
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        
+        if args.pretrained:
+            model = load_lora_blip2_model(BlipForConditionalGeneration, args.model_load_dir).to(device)
+        else:
+            model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
+    elif args.model == "blip2":
+        processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b-coco")
+        if args.pretrained:
+            model = load_lora_blip2_model(Blip2ForConditionalGeneration, args.model_load_dir).to(device)
+        else:
+            model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b-coco").to(device)
+
     if precision == "float16":
         model = model.half()
-    test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, test=True)
-    test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=True)
-    loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir)
+    if args.dataset == "Diffusion2DB":
+        test_dataset = DiffusionDB(test_root_dir, text = guide_text, transform=processor, max_length=args.max_length, regenerate=False)
+    elif args.dataset == "flickr30k":
+        test_dataset = Flickr30k(data_root_dir, text = guide_text, transform=processor, split="test", max_length=args.max_length)
+    test_loader = DataLoader(test_dataset,batch_size=batch_size,shuffle=False)
+    loss, clip_sim, sen_sim = evaluate(model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, \
+        saved=True, saved_dir=save_dir, max_length=args.max_length, max_new_tokens=args.max_new_tokens, num_beams=args.num_beams)
     print(f"Evaluate losss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
 
 if __name__ == "__main__":
