@@ -1,0 +1,11 @@
+labels:
+
+real_labels = [" real", "photo", "environment", "landscape"]
+unreal_labels = ["unreal", "illustration", "concept art"]
+fantasy_labels = ["magic", "d & d", "greg rutkowski", "dragons", "wizard"]
+detailed_labels = ["detail", "intricate"]
+res_labels = ["hdr", "8 k", "4 k", "high quality", "hd", "clear"]
+focus_labels = ["sharp focus"]
+cinematic = ["cinematic"]
+painting_labels = ["painting"]
+digital_labels = ["digital", "engine", ]

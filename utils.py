@@ -60,8 +60,14 @@ def save_model(path, model, epochs):
     save_model_dir = os.path.join(path, epochs)
     os.makedirs(save_model_dir, exist_ok=True)
     model.save_pretrained(save_model_dir)
-    
-def comb_output(labels, output, caption):
-    output_text = [labels[int(i)] for i in output_text]
-    output = [caption[i] + output[i] for i in range(len(caption))]
-    return output
+   
+def save_classifier(path, classifier, epochs, label):
+    os.makedirs(os.path.join(path, epochs), exist_ok=True)
+    save_model_dir = os.path.join(os.path.join(path, epochs),f"{label}_classifier.tar")
+    checkpoint = {
+    'key_word': label,
+    'model_state_dict': classifier.state_dict(),
+    }
+    # Save checkpoint
+    torch.save(checkpoint, save_model_dir) 
+

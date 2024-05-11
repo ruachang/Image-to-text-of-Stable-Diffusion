@@ -168,27 +168,33 @@ def label_static(root_img_dir, ids):
         json_keys, prompt, work_file = get_part_json(root_img_dir, id)
         for p in prompt:
             content = max(p.split(","), key=len)
-            labels = p - content
+            labels = p.replace(content, "")
             labels = labels.split(",")
             for l in labels:
-                if l not in dic.values():
+                if l not in dic.keys():
                     dic[l] = 1
                 else:
                     dic[l] += 1
     top_100_labels = sorted(dic.items(), key=lambda item: item[1], reverse=True)
-    return dic, labels
+    return dic, top_100_labels
 
-def label_json(root_json_dir, id, labels):
+def label_json(root_json_dir, id, labels_dic):
     label_dic = {}
+    count = 0
     json_keys, prompt, work_file = get_part_json(root_json_dir, id)
+    filtered_dic = filter_same_image(work_file, json_keys, prompt)
     for i in range(len(prompt)):
         p = prompt[i]
         img = json_keys[i]
         label_dic[img] = []
-        for label in labels:
-            if label in p:
+        exist_flag = False
+        for word in labels_dic:
+            if word in p:
                 label_dic[img].append(1)
-            else:
-                label_dic[img].append(0)
-    return label_dic
+                exist_flag = True
+                count += 1
+        if exist_flag == False:
+            label_dic[img].append(0)
+    print(count)
+    return label_dic, work_file
             

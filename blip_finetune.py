@@ -2,6 +2,7 @@ import os
 import argparse
 
 import torch
+from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from transformers import BlipProcessor, BlipForConditionalGeneration, Blip2Processor, Blip2ForConditionalGeneration
 from peft import LoraConfig, get_peft_model
@@ -12,10 +13,16 @@ import wandb
 
 from dataset_diffusionDB import DiffusionDB
 from dataset_flickr30k import Flickr30k
-from evaluate import evaluate
+from evaluate import evaluate, sentence_cos_similarity
 from utils import *
 from scheduler import WarmupCosineLR
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+import sys
+sys.path.append("/data/changl25/img2textModel/sentence-transformers/")
+from sentence_transformers import SentenceTransformer
+
+st_model = SentenceTransformer('/data/changl25/img2textModel/all-MiniLM-L6-v2').to(device).eval()
 
 def build_args():
     parser = argparse.ArgumentParser()
@@ -30,7 +37,7 @@ def build_args():
     parser.add_argument("--dataset", type=str, default="Diffusion2DB")
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--max_new_tokens", type=int, default=50)
-    parser.add_argument("--num_beams", type=int, default=1)
+    parser.add_argument("--repetition_penalty", type=float, default=1.5)
     parser.add_argument("--split", type=int, default=1)
     parser.add_argument("--train_id", nargs='+', type=int, default=[2, 3], help='trained dataset ids')
     parser.add_argument("--test_id", nargs='+', type=int, default=[1], help='test dataset ids')
@@ -42,6 +49,7 @@ def build_args():
     parser.add_argument("--lora_modules", nargs='+', type=str, default=[])
     
     parser.add_argument("--warmup", action='store_true')
+    parser.add_argument("--similar_loss", action='store_true')
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--warmup_init_lr", type=float, default=1e-8)
     parser.add_argument("--init_lr", type=float, default=1e-5)
@@ -54,33 +62,50 @@ def build_args():
     parser.add_argument("--wandb", action='store_true')
     args = parser.parse_args()
     return args
-
+ 
 def train_manual(peft_model, preprocessor, train_loader, validate_loader, test_loader, epochs, optimizer, scheduler, \
-    precision, text_flag, save_dir, use_wandb, max_length, max_new_tokens, num_beams):
+    precision, text_flag, model_save_dir, save_dir, similarity_loss, use_wandb, max_length, max_new_tokens, repetition_penalty):
     best_validate_loss = float("inf")
+    sen_bias = 25
+    mse_loss = nn.MSELoss()
     if precision == "float16":
         scaler = GradScaler(enabled=True)
     for epoch in range(epochs):
         peft_model.train()
         for i, data in enumerate(train_loader):
-            inputs, _, prompt = data
+            inputs, inputs_generate, prompt = data
             optimizer.zero_grad()
             for key, value in inputs.items():
                     inputs[key] = value.to(device)
-                    labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length", truncation=True, max_length=max_length)["input_ids"]).to(device)
-            optimizer.zero_grad()
+            for key, value in inputs.items():
+                inputs_generate[key] = value.to(device)
+            labels = torch.tensor(preprocessor.tokenizer(text=prompt, padding="max_length", truncation=True, max_length=max_length)["input_ids"]).to(device)
             if precision == "float16":
                  with autocast(enabled=True):
                     if text_flag:
                         input_ids = inputs.pop("input_ids")
                         pixel_values = inputs.pop("pixel_values")
                         attention_mask = inputs.pop("attention_mask")
-                        outputs = peft_model(input_ids=input_ids, pixel_values=pixel_values,attention_mask=attention_mask,labels=labels)
+                        outputs = peft_model(input_ids=labels, pixel_values=pixel_values,attention_mask=attention_mask,labels=labels)
+                        # feature = peft_model.vision_model(pixel_values=pixel_values, return_dict=False)
+                        # print(feature[0].shape)
                     else:
                         pixel_values = inputs.pop("pixel_values")
                         outputs = peft_model(pixel_values=pixel_values, labels=labels)
-            
                     loss = outputs.loss
+                    if torch.isnan(outputs.loss ).any():
+                        print(prompt)
+                        continue
+                    if similarity_loss:
+                        out = peft_model.generate(**inputs_generate,
+                            max_new_tokens=max_new_tokens, 
+                            repetition_penalty = repetition_penalty
+                            )
+                        out_text = preprocessor.batch_decode(out, skip_special_tokens=True)
+                        with torch.no_grad():
+                            sentence_sim = sentence_cos_similarity(st_model, out_text, prompt)
+                        sentence_loss = mse_loss(torch.tensor(sentence_sim).to(device), torch.tensor(1.0).to(device))
+                        loss += sen_bias * sentence_loss
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
@@ -94,19 +119,40 @@ def train_manual(peft_model, preprocessor, train_loader, validate_loader, test_l
                     pixel_values = inputs.pop("pixel_values")
                     outputs = peft_model(pixel_values=pixel_values, labels=labels)
                 loss = outputs.loss
+                if similarity_loss:
+                    for key, value in inputs.items():
+                        inputs_generate[key] = value.to(device)
+                    out = peft_model.generate(**inputs_generate,
+                        max_new_tokens=max_new_tokens, 
+                        repetition_penalty = repetition_penalty
+                        )
+                    out_text = preprocessor.batch_decode(out, skip_special_tokens=True)
+                    with torch.no_grad():
+                        sentence_loss = sentence_cos_similarity(st_model, out_text, prompt)
+                    sentence_loss = mse_loss(torch.tensor(sentence_sim).to(device), torch.tensor(1.0).to(device))
+                    loss += sen_bias * sentence_loss
                 loss.backward()
                 optimizer.step()
             if scheduler != None:    
                 scheduler.step()
             if (i + 1) % (len(train_loader) // 3) == 0:
-                print(f"Epoch {epoch}: {i} / {len(train_loader)} {(loss / len(prompt)):.4f}")
-        validate_loss, validate_clip_sim, validate_similarity = evaluate(peft_model, preprocessor,validate_loader, text_flag, precision, device)
-        test_loss, test_clip_sim, test_similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device)
-        print(f"Epoch {epoch}: validate: loss {validate_loss:.4f}; similarity: {validate_similarity:.4f}; clip similarity: {validate_clip_sim:.4f}")
-        print(f"Epoch {epoch}: test:     loss {test_loss:.4f}; similarity: {test_similarity:.4f}; clip similarity: {test_clip_sim:.4f}")
+                if similarity_loss:
+                    print(f"Epoch {epoch}: {i} / {len(train_loader)} {(loss / len(prompt)):.4f} {(sentence_loss / len(prompt)):.4f}")
+                else:
+                    print(f"Epoch {epoch}: {i} / {len(train_loader)} {(loss / len(prompt)):.4f}")
+        validate_loss, validate_clip_sim, validate_similarity = evaluate(peft_model, preprocessor,validate_loader, text_flag, precision, device, \
+                                                                         saved=True, saved_dir=save_dir, max_length=max_length, max_new_tokens=max_new_tokens, repetition_penalty=repetition_penalty)
+        test_loss, test_clip_sim, test_similarity = evaluate(peft_model, preprocessor,test_loader, text_flag, precision, device, \
+            saved=True, saved_dir=save_dir, max_length=max_length, max_new_tokens=max_new_tokens, repetition_penalty=repetition_penalty)
+        if similarity_loss:
+            print(f"Epoch {epoch}: validate: loss {validate_loss:.4f} {sen_bias * mse_loss(torch.tensor(validate_similarity).to(device), torch.tensor(1.0).to(device)):.4f}; similarity: {validate_similarity:.4f}; clip similarity: {validate_clip_sim:.4f}")
+            print(f"Epoch {epoch}: test:     loss {test_loss:.4f} {sen_bias * mse_loss(torch.tensor(test_similarity).to(device), torch.tensor(1.0).to(device)):.4f}; similarity: {test_similarity:.4f}; clip similarity: {test_clip_sim:.4f}")
+        else:
+            print(f"Epoch {epoch}: validate: loss {validate_loss:.4f}; similarity: {validate_similarity:.4f}; clip similarity: {validate_clip_sim:.4f}")
+            print(f"Epoch {epoch}: test:     loss {test_loss:.4f}; similarity: {test_similarity:.4f}; clip similarity: {test_clip_sim:.4f}")
         if validate_loss < best_validate_loss:
             best_validate_loss = validate_loss
-            save_model(save_dir, peft_model, "best")
+            save_model(model_save_dir, peft_model, "best")
         if use_wandb:
             wandb.log({"validate_loss": validate_loss}, step = epoch + 1)
             wandb.log({"validate_clip_sim": validate_clip_sim}, step = epoch + 1)
@@ -114,8 +160,8 @@ def train_manual(peft_model, preprocessor, train_loader, validate_loader, test_l
             wandb.log({"test_loss": test_loss}, step = epoch + 1)
             wandb.log({"test_clip_sim": test_clip_sim}, step = epoch + 1)
             wandb.log({"test_similarity": test_similarity}, step = epoch + 1)
-        if epoch in [0, 5, 10, 20, 30, 40]:
-            save_model(save_dir, peft_model, str(epoch))
+        # if epoch in [0, 5, 10, 20, 30, 40]:
+        save_model(model_save_dir, peft_model, str(epoch))
     print("Trained down!")     
 
 def main(args):
@@ -131,6 +177,7 @@ def main(args):
     model_save_dir = args.model_save_dir
     os.makedirs(model_save_dir, exist_ok=True)
     guide_text = "A photo of"
+    # guide_text = None
     
     if args.model == "blip":
         processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -187,10 +234,10 @@ def main(args):
             "text": guide_text
         }
         init_wandb(config, peft_model, f"blip{epochs}_{batch_size}")
-    train_manual(peft_model, processor, train_loader, validate_loader, test_loader, epochs, optimizer, scheduler, precision, train_dataset.is_text_supervised(), model_save_dir, args.wandb, \
-        max_length=args.max_length, max_new_tokens=args.max_new_tokens, num_beams=args.num_beams)
+    train_manual(peft_model, processor, train_loader, validate_loader, test_loader, epochs, optimizer, scheduler, precision, train_dataset.is_text_supervised(), \
+        model_save_dir=model_save_dir, save_dir=save_dir, similarity_loss=args.similar_loss, use_wandb=args.wandb, max_length=args.max_length, max_new_tokens=args.max_new_tokens, repetition_penalty=args.repetition_penalty)
     loss, clip_sim, sen_sim = evaluate(peft_model, processor, test_loader, test_dataset.is_text_supervised(), precision, device, saved=True, saved_dir=save_dir, \
-        max_length=args.max_length, max_new_tokens=args.max_new_tokens, num_beams=args.num_beams)
+        max_length=args.max_length, max_new_tokens=args.max_new_tokens, repetition_penalty=args.repetition_penalty)
     print("Evaluate after training")
     print(f"Final loss: {loss:.4f}; similarity: {sen_sim:.4f}; clip similarity: {clip_sim:.4f}")
     save_model(model_save_dir, peft_model, str(epochs))
