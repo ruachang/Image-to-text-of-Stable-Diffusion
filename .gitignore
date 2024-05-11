@@ -4,3 +4,5 @@
 *.csv
 *submit.sh
 *.pyc
+record.csv
+tmp.ipynb
